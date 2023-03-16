@@ -2,9 +2,16 @@ from concurrent import futures
 import grpc
 import json
 import time
+import scipy.io.wavfile as wav
 
 import paraformer_pb2_grpc
 from paraformer_pb2 import Response
+
+
+#10cm.wav  1m.wav  3m.wav , for near and far field recognition. 1m.wav in default.
+prefix_rate,prefix_sig = wav.read('./prefix_wav/1chanel_wav/1m.wav')
+prefix_sig_bytes = prefix_sig.tobytes()
+
 
 
 class ASRServicer(paraformer_pb2_grpc.ASRServicer):
@@ -103,15 +110,15 @@ class ASRServicer(paraformer_pb2_grpc.ASRServicer):
                         yield Response(sentence=json.dumps(result), user=req.user, action="waiting", language=req.language)
                     else:
                         if self.backend == "pipeline":
-                            asr_result = self.inference_16k_pipeline(audio_in=tmp_data, audio_fs = self.sample_rate)
+                            asr_result = self.inference_16k_pipeline(audio_in=prefix_sig_bytes + tmp_data, audio_fs = self.sample_rate)
                             if "text" in asr_result:
-                                asr_result = asr_result['text']
+                                asr_result = asr_result['text'][4:] #drop words in prefix_sig_bytes
                             else:
                                 asr_result = ""
                         elif self.backend == "onnxruntime":
                             from rapid_paraformer.utils.frontend import load_bytes
-                            array = load_bytes(tmp_data)
-                            asr_result = self.inference_16k_pipeline(array)[0]
+                            array = load_bytes(prefix_sig_bytes + tmp_data)
+                            asr_result = self.inference_16k_pipeline(array)[0][4:] #drop words in prefix_sig_bytes
                         end_time = int(round(time.time() * 1000))
                         delay_str = str(end_time - begin_time)
                         print ("user: %s , delay(ms): %s, text: %s " % (req.user, delay_str, asr_result))
