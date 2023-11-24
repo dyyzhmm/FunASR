@@ -818,6 +818,63 @@ bool Audio::LoadPcmwav(const char* buf, int n_buf_len, int32_t* sampling_rate)
         return false;
 }
 
+int alaw2linear(int aLawValue) {
+    const int ALAW_MAX = 0x7F;
+    const double c = 127.0 / log(1.0 + ALAW_MAX);
+
+    int sign = (aLawValue & 0x80) ? -1 : 1;
+    int magnitude = (aLawValue & 0x7F);
+
+    magnitude = magnitude ^ 0x55;
+    magnitude = ((magnitude & 0xF) << 4) + 0x8;
+    
+    return sign * (magnitude == 0x80 ? 0 : c * log(magnitude));
+}
+
+bool Audio::LoadPcmAwav(const char* buf, int n_buf_len, int32_t* sampling_rate)
+{
+    if (speech_data != NULL) {
+        free(speech_data);
+    }
+    if (speech_buff != NULL) {
+        free(speech_buff);
+    }
+    offset = 0;
+
+    speech_len = n_buf_len ; // / 2;
+    speech_buff = (int8_t*)malloc(sizeof(int8_t) * speech_len);
+    if (speech_buff)
+    {
+        memset(speech_buff, 0, sizeof(int8_t) * speech_len);
+        memcpy((void*)speech_buff, (const void*)buf, speech_len * sizeof(int8_t));
+
+        speech_data = (float*)malloc(sizeof(float) * speech_len);
+        memset(speech_data, 0, sizeof(float) * speech_len);
+
+        float scale = 1;
+        if (data_type == 1) {
+            scale = 32768;
+        }
+
+        for (int32_t i = 0; i != speech_len; ++i) {
+            speech_data[i] = (float)alaw2linear(speech_buff[i]) / scale;
+        }
+        
+        //resample
+        if(*sampling_rate != dest_sample_rate){
+            return False;
+            //WavResample(*sampling_rate, speech_data, speech_len);
+        }
+
+        AudioFrame* frame = new AudioFrame(speech_len);
+        frame_queue.push(frame);
+        return true;
+
+    }
+    else
+        return false;
+}
+
 bool Audio::LoadPcmwavOnline(const char* buf, int n_buf_len, int32_t* sampling_rate)
 {
     if (speech_data != NULL) {

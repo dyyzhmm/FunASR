@@ -15,6 +15,7 @@
 #include <map>
 #include <glog/logging.h>
 #include "funasrruntime.h"
+#include "paraformer_server.h"
 #include "tclap/CmdLine.h"
 #include "com-define.h"
 #include <unordered_map>
@@ -38,7 +39,143 @@ void GetValue(TCLAP::ValueArg<std::string>& value_arg, string key, std::map<std:
     }
 }
 
-int main(int argc, char** argv)
+ASRServicer::ASRServicer() {
+
+
+    TCLAP::CmdLine cmd("funasr-onnx-offline", ' ', "1.0");
+    TCLAP::ValueArg<std::string>    model_dir("", MODEL_DIR, "the asr model path, which contains model.onnx, config.yaml, am.mvn", false, "/data/huangmingming/asr/funasr/onnx8k/funasr/runtime/onnxruntime/8kmodel/speech_paraformer_asr_nat-zh-cn-8k-common-vocab8358-tensorflow1", "string");
+    TCLAP::ValueArg<std::string>    quantize("", QUANTIZE, "true (Default), load the model of model.onnx in model_dir. If set true, load the model of model_quant.onnx in model_dir", false, "true", "string");
+    TCLAP::ValueArg<std::string>    vad_dir("", VAD_DIR, "the vad model path, which contains model.onnx, vad.yaml, vad.mvn", false, "", "string");
+    TCLAP::ValueArg<std::string>    vad_quant("", VAD_QUANT, "true (Default), load the model of model.onnx in vad_dir. If set true, load the model of model_quant.onnx in vad_dir", false, "true", "string");
+    TCLAP::ValueArg<std::string>    punc_dir("", PUNC_DIR, "the punc model path, which contains model.onnx, punc.yaml", false, "", "string");
+    TCLAP::ValueArg<std::string>    punc_quant("", PUNC_QUANT, "true (Default), load the model of model.onnx in punc_dir. If set true, load the model of model_quant.onnx in punc_dir", false, "true", "string");
+    TCLAP::ValueArg<std::string>    lm_dir("", LM_DIR, "the lm model path, which contains compiled models: TLG.fst, config.yaml ", false, "", "string");
+    TCLAP::ValueArg<float>    global_beam("", GLOB_BEAM, "the decoding beam for beam searching ", false, 3.0, "float");
+    TCLAP::ValueArg<float>    lattice_beam("", LAT_BEAM, "the lattice generation beam for beam searching ", false, 3.0, "float");
+    TCLAP::ValueArg<float>    am_scale("", AM_SCALE, "the acoustic scale for beam searching ", false, 10.0, "float");
+    TCLAP::ValueArg<std::int32_t>   fst_inc_wts("", FST_INC_WTS, "the fst hotwords incremental bias", false, 20, "int32_t");
+    TCLAP::ValueArg<std::string>    itn_dir("", ITN_DIR, "the itn model(fst) path, which contains zh_itn_tagger.fst and zh_itn_verbalizer.fst", false, "", "string");
+    //TCLAP::ValueArg<std::string>    wav_path("", WAV_PATH, "the input could be: wav_path, e.g.: asr_example.wav; pcm_path, e.g.: asr_example.pcm; wav.scp, kaldi style wav list (wav_id \t wav_path)", true, "", "string");
+    TCLAP::ValueArg<std::string>    hotword("", HOTWORD, "the hotword file, one hotword perline, Format: Hotword Weight (could be: 阿里巴巴 20)", false, "", "string");
+
+    cmd.add(model_dir);
+    cmd.add(quantize);
+    cmd.add(vad_dir);
+    cmd.add(vad_quant);
+    cmd.add(punc_dir);
+    cmd.add(punc_quant);
+    cmd.add(itn_dir);
+    cmd.add(lm_dir);
+    cmd.add(global_beam);
+    cmd.add(lattice_beam);
+    cmd.add(am_scale);
+    cmd.add(fst_inc_wts);
+    //cmd.add(wav_path);
+    cmd.add(hotword);
+    cmd.parse(argc, argv);
+
+    std::map<std::string, std::string> model_path;
+    GetValue(model_dir, MODEL_DIR, model_path);
+    GetValue(quantize, QUANTIZE, model_path);
+    GetValue(vad_dir, VAD_DIR, model_path);
+    GetValue(vad_quant, VAD_QUANT, model_path);
+    GetValue(punc_dir, PUNC_DIR, model_path);
+    GetValue(punc_quant, PUNC_QUANT, model_path);
+    GetValue(itn_dir, ITN_DIR, model_path);
+    GetValue(lm_dir, LM_DIR, model_path);
+    //GetValue(wav_path, WAV_PATH, model_path);
+
+    struct timeval start, end;
+    gettimeofday(&start, NULL);
+    thread_num = 1;
+    asr_hanlde=FunOfflineInit(model_path, thread_num);
+
+    if (!asr_hanlde)
+    {
+        LOG(ERROR) << "FunASR init failed";
+        exit(-1);
+    }
+    float glob_beam = 3.0f;
+    float lat_beam = 3.0f;
+    float am_sc = 10.0f;
+    if (lm_dir.isSet()) {
+        glob_beam = global_beam.getValue();
+        lat_beam = lattice_beam.getValue();
+        am_sc = am_scale.getValue();
+    }
+    // init wfst decoder
+    decoder_handle = FunASRWfstDecoderInit(asr_hanlde, ASR_OFFLINE, glob_beam, lat_beam, am_sc);
+
+    // hotword file
+    unordered_map<string, int> hws_map;
+    std::string nn_hotwords_ = "";
+    std::string hotword_path = hotword.getValue();
+    LOG(INFO) << "hotword path: " << hotword_path;
+    funasr::ExtractHws(hotword_path, hws_map, nn_hotwords_);
+
+    gettimeofday(&end, NULL);
+    long seconds = (end.tv_sec - start.tv_sec);
+    long modle_init_micros = ((seconds * 1000000) + end.tv_usec) - (start.tv_usec);
+    LOG(INFO) << "Model initialization takes " << (double)modle_init_micros / 1000000 << " s";  
+    FunWfstDecoderLoadHwsRes(decoder_handle, fst_inc_wts.getValue(), hws_map);
+    hotwords_embedding = CompileHotwordEmbedding(asr_hanlde, nn_hotwords_);
+
+}
+
+grpc::Status ASRServicer::Recognize(
+    grpc::ServerContext* context,
+    grpc::ServerReaderWriter<Response, Request>* stream) {
+
+    Request req;
+    while (stream->Read(&req)) {
+        
+
+        gettimeofday(&start, NULL);
+        FUNASR_RESULT result = FunOfflineInfer(asr_hanlde, req.audio_data(), RASR_NONE, NULL, hotwords_embedding, 16000, false, decoder_handle);
+        gettimeofday(&end, NULL);
+        seconds = (end.tv_sec - start.tv_sec);
+        taking_micros += ((seconds * 1000000) + end.tv_usec) - (start.tv_usec);
+
+        if (result)
+        {
+            string msg = FunASRGetResult(result, 0);
+            LOG(INFO)<< wav_id <<" : "<<msg;
+            string stamp = FunASRGetStamp(result);
+            if(stamp !=""){
+                LOG(INFO)<< wav_id <<" : "<<stamp;
+            }
+            snippet_time += FunASRGetRetSnippetTime(result);
+            FunASRFreeResult(result);
+        }
+        else
+        {
+            LOG(ERROR) << ("No return data!\n");
+        }
+    
+        //FunWfstDecoderUnloadHwsRes(decoder_handle);
+        LOG(INFO) << "Audio length: " << (double)snippet_time << " s";
+        LOG(INFO) << "Model inference takes: " << (double)taking_micros / 1000000 <<" s";
+        LOG(INFO) << "Model inference RTF: " << (double)taking_micros/ (snippet_time*1000000);
+        
+        //FunASRWfstDecoderUninit(decoder_handle);
+        //FunOfflineUninit(asr_hanlde);
+        return 0;
+        
+    }
+}
+void RunServer() {
+  std::string server_address("0.0.0.0:10108");
+  ASRServicer service;
+
+  ServerBuilder builder;
+  builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
+  builder.RegisterService(&service);
+  std::unique_ptr<Server> server(builder.BuildAndStart());
+  std::cout << "Server listening on " << server_address << std::endl;
+  server->Wait();
+}
+
+int main_DEP(int argc, char** argv)
 {
     google::InitGoogleLogging(argv[0]);
     FLAGS_logtostderr = true;
@@ -157,7 +294,7 @@ int main(int argc, char** argv)
         auto& wav_file = wav_list[i];
         auto& wav_id = wav_ids[i];
         gettimeofday(&start, NULL);
-        FUNASR_RESULT result=FunOfflineInfer(asr_hanlde, wav_file.c_str(), RASR_NONE, NULL, hotwords_embedding, 16000, false, decoder_handle);
+        FUNASR_RESULT result = FunOfflineInfer(asr_hanlde, wav_file.c_str(), RASR_NONE, NULL, hotwords_embedding, 16000, false, decoder_handle);
         gettimeofday(&end, NULL);
         seconds = (end.tv_sec - start.tv_sec);
         taking_micros += ((seconds * 1000000) + end.tv_usec) - (start.tv_usec);

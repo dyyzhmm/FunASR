@@ -64,6 +64,7 @@ class Audio {
     bool LoadWav(const char* filename, int32_t* sampling_rate);
     bool LoadWav2Char(const char* filename, int32_t* sampling_rate);
     bool LoadPcmwav(const char* buf, int n_file_len, int32_t* sampling_rate);
+    bool LoadPcmAwav(const char* buf, int n_file_len, int32_t* sampling_rate);
     bool LoadPcmwav(const char* filename, int32_t* sampling_rate);
     bool LoadPcmwav2Char(const char* filename, int32_t* sampling_rate);
     bool LoadOthers2Char(const char* filename);
